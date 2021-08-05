@@ -10,9 +10,9 @@ namespace FluentModbus
     {
         #region Fields
 
-        SerialPort _serialPort;
+        private SerialPort _serialPort;
 
-        #endregion
+        #endregion Fields
 
         #region Constructors
 
@@ -21,7 +21,7 @@ namespace FluentModbus
             _serialPort = serialPort;
         }
 
-        #endregion
+        #endregion Constructors
 
         #region Properties
 
@@ -29,18 +29,18 @@ namespace FluentModbus
 
         public bool IsOpen => _serialPort.IsOpen;
 
-        #endregion
+        #endregion Properties
 
         #region Methods
 
         public void Open()
         {
-            _serialPort.Open();
+            if (!_serialPort.IsOpen) _serialPort.Open();
         }
 
         public void Close()
         {
-            _serialPort.Close();
+            if (_serialPort.IsOpen) _serialPort.Close();
         }
 
         public int Read(byte[] buffer, int offset, int count)
@@ -113,6 +113,6 @@ namespace FluentModbus
             }
         }
 
-        #endregion
+        #endregion Methods
     }
 }

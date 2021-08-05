@@ -8,60 +8,83 @@ using System.Threading.Tasks;
 
 namespace FluentModbus
 {
-    internal abstract class ModbusRequestHandler : IDisposable
+    internal class ModbusMultiUnitRtuRequestHandler : IDisposable
+
     {
         #region Fields
 
+        private IModbusRtuSerialPort _serialPort;
         private Task _task;
+        private object Lock = new object();
 
         #endregion Fields
 
         #region Constructors
 
-        public ModbusRequestHandler(ModbusServer modbusServer, int bufferSize)
+        public ModbusMultiUnitRtuRequestHandler(IModbusRtuSerialPort serialPort, Dictionary<byte, ModbusRtuServer> rtuServers, bool isAsync)
         {
-            this.ModbusServer = modbusServer;
-            this.FrameBuffer = new ModbusFrameBuffer(bufferSize);
+            _serialPort = serialPort;
+
+            RtuServers = rtuServers;
+            IsAsynchronous = isAsync;
+            if (!serialPort.IsOpen)
+            {
+                _serialPort.Open();
+            }
+
+            this.FrameBuffer = new ModbusFrameBuffer(256);
 
             this.LastRequest = Stopwatch.StartNew();
             this.IsReady = true;
 
             this.CTS = new CancellationTokenSource();
+            Start();
         }
 
         #endregion Constructors
 
         #region Properties
 
-        public ModbusServer ModbusServer { get; }
         public Stopwatch LastRequest { get; protected set; }
         public int Length { get; protected set; }
         public bool IsReady { get; protected set; }
 
-        public abstract string DisplayName { get; }
-
-        protected byte UnitIdentifier { get; set; }
         protected CancellationTokenSource CTS { get; }
         protected ModbusFrameBuffer FrameBuffer { get; }
 
-        protected abstract bool IsResponseRequired { get; }
+        protected bool IsResponseRequired(byte unitId) => RtuServers.ContainsKey(unitId);
+
+        public Dictionary<byte, ModbusRtuServer> RtuServers { get; }
+        public bool IsAsynchronous { get; }
 
         #endregion Properties
 
         #region Methods
 
-        public void WriteResponse()
+        protected void Start()
+        {
+            if (this.IsAsynchronous)
+            {
+                _task = Task.Run(async () =>
+                {
+                    while (!this.CTS.IsCancellationRequested)
+                    {
+                        await this.ReceiveRequestAsync();
+                    }
+                }, this.CTS.Token);
+            }
+        }
+
+        public void WriteResponse(byte unitId)
         {
             int frameLength;
-            Action processingMethod;
+            Action<byte> processingMethod;
 
-            if (!this.IsResponseRequired)
-                return;
+            if (!this.IsResponseRequired(unitId)) return;
 
-            if (!(this.IsReady && this.Length > 0))
-                throw new Exception(ErrorMessage.ModbusTcpRequestHandler_NoValidRequestAvailable);
+            if (!(this.IsReady && this.Length > 0)) throw new Exception(ErrorMessage.ModbusTcpRequestHandler_NoValidRequestAvailable);
 
-            var rawFunctionCode = this.FrameBuffer.Reader.ReadByte();                                              // 07     Function Code
+            var rawFunctionCode = this.FrameBuffer.Reader.ReadByte();   // 07     Function Code
 
             this.FrameBuffer.Writer.Seek(0, SeekOrigin.Begin);
 
@@ -88,54 +111,128 @@ namespace FluentModbus
                         ModbusFunctionCode.ReadWriteMultipleRegisters => this.ProcessReadWriteMultipleRegisters,
                         //ModbusFunctionCode.ReadFifoQueue
                         //ModbusFunctionCode.Error
-                        _ => () => this.WriteExceptionResponse(rawFunctionCode, ModbusExceptionCode.IllegalFunction)
+                        _ => (byte unitId) => this.WriteExceptionResponse(rawFunctionCode, ModbusExceptionCode.IllegalFunction)
                     };
                 }
                 catch (Exception)
                 {
-                    processingMethod = () => this.WriteExceptionResponse(rawFunctionCode, ModbusExceptionCode.ServerDeviceFailure);
+                    processingMethod = (byte unitId) => this.WriteExceptionResponse(rawFunctionCode, ModbusExceptionCode.ServerDeviceFailure);
                 }
             }
             else
             {
-                processingMethod = () => this.WriteExceptionResponse(rawFunctionCode, ModbusExceptionCode.IllegalFunction);
+                processingMethod = (byte unitId) => this.WriteExceptionResponse(rawFunctionCode, ModbusExceptionCode.IllegalFunction);
             }
 
             // if incoming frames shall be processed asynchronously, access to memory must be orchestrated
-            if (this.ModbusServer.IsAsynchronous)
+            if (this.IsAsynchronous)
             {
-                lock (this.ModbusServer.Lock)
+                lock (this.Lock)
                 {
-                    frameLength = this.WriteFrame(processingMethod);
+                    frameLength = this.WriteFrame(unitId, processingMethod);
                 }
             }
             else
             {
-                frameLength = this.WriteFrame(processingMethod);
+                frameLength = this.WriteFrame(unitId, processingMethod);
             }
 
             this.OnResponseReady(frameLength);
         }
 
-        internal abstract Task ReceiveRequestAsync();
-
-        protected void Start()
+        internal async Task ReceiveRequestAsync()
         {
-            if (this.ModbusServer.IsAsynchronous)
+            if (this.CTS.IsCancellationRequested) return;
+
+            this.IsReady = false;
+
+            try
             {
-                _task = Task.Run(async () =>
-                {
-                    while (!this.CTS.IsCancellationRequested)
-                    {
-                        await this.ReceiveRequestAsync();
-                    }
-                }, this.CTS.Token);
+                var unitId = await this.InternalReceiveRequestAsync();
+
+                this.IsReady = true; // only when IsReady = true, this.WriteResponse() can be called
+
+                if (this.IsAsynchronous) this.WriteResponse(unitId);
+            }
+            catch (Exception)
+            {
+                this.CTS.Cancel();
             }
         }
 
-        protected abstract int WriteFrame(Action extendFrame);
+        protected int WriteFrame(byte unitId, Action<byte> extendFrame)
+        {
+            int frameLength;
+            ushort crc;
 
-        protected abstract void OnResponseReady(int frameLength);
+            this.FrameBuffer.Writer.Seek(0, SeekOrigin.Begin);
+
+            // add unit identifier
+            this.FrameBuffer.Writer.Write(unitId);
+
+            // add PDU
+            extendFrame(unitId);
+
+            // add CRC
+            frameLength = unchecked((int)this.FrameBuffer.Writer.BaseStream.Position);
+            crc = ModbusUtils.CalculateCRC(this.FrameBuffer.Buffer.AsMemory(0, frameLength));
+            this.FrameBuffer.Writer.Write(crc);
+
+            return frameLength + 2;
+        }
+
+        protected void OnResponseReady(int frameLength)
+        {
+            _serialPort.Write(this.FrameBuffer.Buffer, 0, frameLength);
+        }
+
+        private async Task<byte> InternalReceiveRequestAsync()
+        {
+            this.Length = 0;
+            byte unitIdentifier = 0;
+            try
+            {
+                while (true)
+                {
+                    this.Length += await _serialPort.ReadAsync(this.FrameBuffer.Buffer, this.Length, this.FrameBuffer.Buffer.Length - this.Length, this.CTS.Token);
+
+                    // full frame received
+                    if (ModbusUtils.DetectFrame(255, this.FrameBuffer.Buffer.AsMemory(0, this.Length)))
+                    {
+                        this.FrameBuffer.Reader.BaseStream.Seek(0, SeekOrigin.Begin);
+
+                        // read unit identifier
+                        unitIdentifier = this.FrameBuffer.Reader.ReadByte();
+
+                        break;
+                    }
+                    else
+                    {
+                        // reset length because one or more chunks of data were received and written to
+                        // the buffer, but no valid Modbus frame could be detected and now the buffer is full
+                        if (this.Length == this.FrameBuffer.Buffer.Length)
+                            this.Length = 0;
+                    }
+                }
+            }
+            catch (TimeoutException)
+            {
+                this.Length = 0;
+            }
+
+            // make sure that the incoming frame is actually adressed to this server
+            if (this.RtuServers.ContainsKey(unitIdentifier))
+            {
+                this.LastRequest.Restart();
+                return unitIdentifier;
+            }
+            else
+            {
+                return 0;
+            }
+        }
+
+        #endregion Methods
 
         private void WriteExceptionResponse(ModbusFunctionCode functionCode, ModbusExceptionCode exceptionCode)
         {
@@ -148,11 +245,11 @@ namespace FluentModbus
             this.FrameBuffer.Writer.Write((byte)exceptionCode);
         }
 
-        private bool CheckRegisterBounds(ModbusFunctionCode functionCode, ushort address, ushort maxStartingAddress, ushort quantityOfRegisters, ushort maxQuantityOfRegisters)
+        private bool CheckRegisterBounds(byte unitId, ModbusFunctionCode functionCode, ushort address, ushort maxStartingAddress, ushort quantityOfRegisters, ushort maxQuantityOfRegisters)
         {
-            if (this.ModbusServer.RequestValidator != null)
+            if (this.RtuServers[unitId].RequestValidator != null)
             {
-                var result = this.ModbusServer.RequestValidator(functionCode, address, quantityOfRegisters);
+                var result = this.RtuServers[unitId].RequestValidator(functionCode, address, quantityOfRegisters);
 
                 if (result > ModbusExceptionCode.OK)
                 {
@@ -176,7 +273,7 @@ namespace FluentModbus
             return true;
         }
 
-        private void DetectChangedRegisters(int startingAddress, Span<short> oldValues, Span<short> newValues)
+        private void DetectChangedRegisters(byte unitId, int startingAddress, Span<short> oldValues, Span<short> newValues)
         {
             var changedRegisters = new List<int>(capacity: newValues.Length);
 
@@ -186,39 +283,39 @@ namespace FluentModbus
                     changedRegisters.Add(startingAddress + i);
             }
 
-            this.ModbusServer.OnRegistersChanged(changedRegisters);
+            this.RtuServers[unitId].OnRegistersChanged(changedRegisters);
         }
 
         // class 0
-        private void ProcessReadHoldingRegisters()
+        private void ProcessReadHoldingRegisters(byte unitId)
         {
             var startingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var quantityOfRegisters = this.FrameBuffer.Reader.ReadUInt16Reverse();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.ReadHoldingRegisters, startingAddress, this.ModbusServer.MaxHoldingRegisterAddress, quantityOfRegisters, 0x7D))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.ReadHoldingRegisters, startingAddress, this.RtuServers[unitId].MaxHoldingRegisterAddress, quantityOfRegisters, 0x7D))
             {
                 this.FrameBuffer.Writer.Write((byte)ModbusFunctionCode.ReadHoldingRegisters);
                 this.FrameBuffer.Writer.Write((byte)(quantityOfRegisters * 2));
-                this.FrameBuffer.Writer.Write(this.ModbusServer.GetHoldingRegisterBuffer().Slice(startingAddress * 2, quantityOfRegisters * 2).ToArray());
+                this.FrameBuffer.Writer.Write(this.RtuServers[unitId].GetHoldingRegisterBuffer().Slice(startingAddress * 2, quantityOfRegisters * 2).ToArray());
             }
         }
 
-        private void ProcessWriteMultipleRegisters()
+        private void ProcessWriteMultipleRegisters(byte unitId)
         {
             var startingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var quantityOfRegisters = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var byteCount = this.FrameBuffer.Reader.ReadByte();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.WriteMultipleRegisters, startingAddress, this.ModbusServer.MaxHoldingRegisterAddress, quantityOfRegisters, 0x7B))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.WriteMultipleRegisters, startingAddress, this.RtuServers[unitId].MaxHoldingRegisterAddress, quantityOfRegisters, 0x7B))
             {
-                var holdingRegisters = this.ModbusServer.GetHoldingRegisters();
+                var holdingRegisters = this.RtuServers[unitId].GetHoldingRegisters();
                 var oldValues = holdingRegisters.Slice(startingAddress).ToArray();
                 var newValues = MemoryMarshal.Cast<byte, short>(this.FrameBuffer.Reader.ReadBytes(byteCount).AsSpan());
 
                 newValues.CopyTo(holdingRegisters.Slice(startingAddress));
 
-                if (this.ModbusServer.EnableRaisingEvents)
-                    this.DetectChangedRegisters(startingAddress, oldValues, newValues);
+                if (this.RtuServers[unitId].EnableRaisingEvents)
+                    this.DetectChangedRegisters(unitId, startingAddress, oldValues, newValues);
 
                 this.FrameBuffer.Writer.Write((byte)ModbusFunctionCode.WriteMultipleRegisters);
 
@@ -236,16 +333,16 @@ namespace FluentModbus
         }
 
         // class 1
-        private void ProcessReadCoils()
+        private void ProcessReadCoils(byte unitId)
         {
             var startingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var quantityOfCoils = this.FrameBuffer.Reader.ReadUInt16Reverse();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.ReadCoils, startingAddress, this.ModbusServer.MaxCoilAddress, quantityOfCoils, 0x7D0))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.ReadCoils, startingAddress, this.RtuServers[unitId].MaxCoilAddress, quantityOfCoils, 0x7D0))
             {
                 var byteCount = (byte)Math.Ceiling((double)quantityOfCoils / 8);
 
-                var coilBuffer = this.ModbusServer.GetCoilBuffer();
+                var coilBuffer = this.RtuServers[unitId].GetCoilBuffer();
                 var targetBuffer = new byte[byteCount];
 
                 for (int i = 0; i < quantityOfCoils; i++)
@@ -268,16 +365,16 @@ namespace FluentModbus
             }
         }
 
-        private void ProcessReadDiscreteInputs()
+        private void ProcessReadDiscreteInputs(byte unitId)
         {
             var startingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var quantityOfInputs = this.FrameBuffer.Reader.ReadUInt16Reverse();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.ReadDiscreteInputs, startingAddress, this.ModbusServer.MaxInputRegisterAddress, quantityOfInputs, 0x7D0))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.ReadDiscreteInputs, startingAddress, this.RtuServers[unitId].MaxInputRegisterAddress, quantityOfInputs, 0x7D0))
             {
                 var byteCount = (byte)Math.Ceiling((double)quantityOfInputs / 8);
 
-                var discreteInputBuffer = this.ModbusServer.GetDiscreteInputBuffer();
+                var discreteInputBuffer = this.RtuServers[unitId].GetDiscreteInputBuffer();
                 var targetBuffer = new byte[byteCount];
 
                 for (int i = 0; i < quantityOfInputs; i++)
@@ -300,25 +397,25 @@ namespace FluentModbus
             }
         }
 
-        private void ProcessReadInputRegisters()
+        private void ProcessReadInputRegisters(byte unitId)
         {
             var startingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var quantityOfRegisters = this.FrameBuffer.Reader.ReadUInt16Reverse();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.ReadInputRegisters, startingAddress, this.ModbusServer.MaxInputRegisterAddress, quantityOfRegisters, 0x7D))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.ReadInputRegisters, startingAddress, this.RtuServers[unitId].MaxInputRegisterAddress, quantityOfRegisters, 0x7D))
             {
                 this.FrameBuffer.Writer.Write((byte)ModbusFunctionCode.ReadInputRegisters);
                 this.FrameBuffer.Writer.Write((byte)(quantityOfRegisters * 2));
-                this.FrameBuffer.Writer.Write(this.ModbusServer.GetInputRegisterBuffer().Slice(startingAddress * 2, quantityOfRegisters * 2).ToArray());
+                this.FrameBuffer.Writer.Write(this.RtuServers[unitId].GetInputRegisterBuffer().Slice(startingAddress * 2, quantityOfRegisters * 2).ToArray());
             }
         }
 
-        private void ProcessWriteSingleCoil()
+        private void ProcessWriteSingleCoil(byte unitId)
         {
             var outputAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var outputValue = this.FrameBuffer.Reader.ReadUInt16();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.WriteSingleCoil, outputAddress, this.ModbusServer.MaxCoilAddress, 1, 1))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.WriteSingleCoil, outputAddress, this.RtuServers[unitId].MaxCoilAddress, 1, 1))
             {
                 if (outputValue != 0x0000 && outputValue != 0x00FF)
                 {
@@ -329,7 +426,7 @@ namespace FluentModbus
                     var bufferByteIndex = outputAddress / 8;
                     var bufferBitIndex = outputAddress % 8;
 
-                    var coils = this.ModbusServer.GetCoils();
+                    var coils = this.RtuServers[unitId].GetCoils();
                     var oldValue = coils[bufferByteIndex];
                     var newValue = oldValue;
 
@@ -340,8 +437,8 @@ namespace FluentModbus
 
                     coils[bufferByteIndex] = newValue;
 
-                    if (this.ModbusServer.EnableRaisingEvents && newValue != oldValue)
-                        this.ModbusServer.OnCoilsChanged(new List<int>() { outputAddress });
+                    if (this.RtuServers[unitId].EnableRaisingEvents && newValue != oldValue)
+                        this.RtuServers[unitId].OnCoilsChanged(new List<int>() { outputAddress });
 
                     this.FrameBuffer.Writer.Write((byte)ModbusFunctionCode.WriteSingleCoil);
 
@@ -355,20 +452,20 @@ namespace FluentModbus
             }
         }
 
-        private void ProcessWriteSingleRegister()
+        private void ProcessWriteSingleRegister(byte unitId)
         {
             var registerAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var registerValue = this.FrameBuffer.Reader.ReadInt16();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.WriteSingleRegister, registerAddress, this.ModbusServer.MaxHoldingRegisterAddress, 1, 1))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.WriteSingleRegister, registerAddress, this.RtuServers[unitId].MaxHoldingRegisterAddress, 1, 1))
             {
-                var holdingRegisters = this.ModbusServer.GetHoldingRegisters();
+                var holdingRegisters = this.RtuServers[unitId].GetHoldingRegisters();
                 var oldValue = holdingRegisters[registerAddress];
                 var newValue = registerValue;
                 holdingRegisters[registerAddress] = newValue;
 
-                if (this.ModbusServer.EnableRaisingEvents && newValue != oldValue)
-                    this.ModbusServer.OnRegistersChanged(new List<int>() { registerAddress });
+                if (this.RtuServers[unitId].EnableRaisingEvents && newValue != oldValue)
+                    this.RtuServers[unitId].OnRegistersChanged(new List<int>() { registerAddress });
 
                 this.FrameBuffer.Writer.Write((byte)ModbusFunctionCode.WriteSingleRegister);
 
@@ -382,7 +479,7 @@ namespace FluentModbus
         }
 
         // class 2
-        private void ProcessReadWriteMultipleRegisters()
+        private void ProcessReadWriteMultipleRegisters(byte unitId)
         {
             var readStartingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var quantityToRead = this.FrameBuffer.Reader.ReadUInt16Reverse();
@@ -390,11 +487,11 @@ namespace FluentModbus
             var quantityToWrite = this.FrameBuffer.Reader.ReadUInt16Reverse();
             var writeByteCount = this.FrameBuffer.Reader.ReadByte();
 
-            if (this.CheckRegisterBounds(ModbusFunctionCode.ReadWriteMultipleRegisters, readStartingAddress, this.ModbusServer.MaxHoldingRegisterAddress, quantityToRead, 0x7D))
+            if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.ReadWriteMultipleRegisters, readStartingAddress, this.RtuServers[unitId].MaxHoldingRegisterAddress, quantityToRead, 0x7D))
             {
-                if (this.CheckRegisterBounds(ModbusFunctionCode.ReadWriteMultipleRegisters, writeStartingAddress, this.ModbusServer.MaxHoldingRegisterAddress, quantityToWrite, 0x7B))
+                if (this.CheckRegisterBounds(unitId, ModbusFunctionCode.ReadWriteMultipleRegisters, writeStartingAddress, this.RtuServers[unitId].MaxHoldingRegisterAddress, quantityToWrite, 0x7B))
                 {
-                    var holdingRegisters = this.ModbusServer.GetHoldingRegisters();
+                    var holdingRegisters = this.RtuServers[unitId].GetHoldingRegisters();
 
                     // write data (write is performed before read according to spec)
                     var writeData = MemoryMarshal.Cast<byte, short>(this.FrameBuffer.Reader.ReadBytes(writeByteCount).AsSpan());
@@ -404,8 +501,8 @@ namespace FluentModbus
 
                     newValues.CopyTo(holdingRegisters.Slice(writeStartingAddress));
 
-                    if (this.ModbusServer.EnableRaisingEvents)
-                        this.DetectChangedRegisters(writeStartingAddress, oldValues, newValues);
+                    if (this.RtuServers[unitId].EnableRaisingEvents)
+                        this.DetectChangedRegisters(unitId, writeStartingAddress, oldValues, newValues);
 
                     // read data
                     var readData = MemoryMarshal.AsBytes(holdingRegisters
@@ -420,19 +517,19 @@ namespace FluentModbus
             }
         }
 
-        #endregion Methods
-
         #region IDisposable Support
 
         private bool disposedValue = false;
 
-        protected virtual void Dispose(bool disposing)
+        public void Dispose(bool disposing)
         {
             if (!disposedValue)
             {
                 if (disposing)
                 {
-                    if (this.ModbusServer.IsAsynchronous)
+                    _serialPort.Close();
+
+                    if (this.IsAsynchronous)
                     {
                         this.CTS?.Cancel();
 

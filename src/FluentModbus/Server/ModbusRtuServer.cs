@@ -14,7 +14,7 @@ namespace FluentModbus
 
         private byte _unitIdentifier;
 
-        #endregion
+        #endregion Fields
 
         #region Constructors
 
@@ -37,7 +37,7 @@ namespace FluentModbus
             this.UnitIdentifier = unitIdentifier;
         }
 
-        #endregion
+        #endregion Constructors
 
         #region Properties
 
@@ -70,6 +70,8 @@ namespace FluentModbus
             }
         }
 
+        //Q: Why are those exposed when they are literraly uncahngable after "start", should be moved to constructor and return values of IModbusRtuSerialPort
+
         /// <summary>
         /// Gets or sets the serial baud rate. Default is 9600.
         /// </summary>
@@ -98,11 +100,11 @@ namespace FluentModbus
         /// <summary>
         /// Gets or sets the write timeout in milliseconds. Default is 1000 ms.
         /// </summary>
-        public int WriteTimeout { get; set; } = 1000;
+        public int WriteTimeout { get; set; }
 
         internal ModbusRtuRequestHandler RequestHandler { get; private set; }
 
-        #endregion
+        #endregion Properties
 
         #region Methods
 
@@ -124,9 +126,11 @@ namespace FluentModbus
 
             _serialPort = serialPort;
 
+            this.RequestHandler = new ModbusRtuRequestHandler(serialPort, this);
+
             this.Start(serialPort);
         }
-        
+
         /// <summary>
         /// Stops the server and closes the underlying serial port.
         /// </summary>
@@ -134,19 +138,25 @@ namespace FluentModbus
         {
             base.Stop();
 
-            this.RequestHandler?.Dispose();            
+            this.RequestHandler?.Dispose();
         }
 
         internal void Start(IModbusRtuSerialPort serialPort)
         {
+            // just so IsConnected can work
+            if (_serialPort == null)
+            {
+                _serialPort = serialPort;
+            }
+
             if (this.Parity == Parity.None && this.StopBits != StopBits.Two)
                 throw new InvalidOperationException(ErrorMessage.Modbus_NoParityRequiresTwoStopBits);
+
+            this.RequestHandler = new ModbusRtuRequestHandler(serialPort, this);
 
             // "base..." is important!
             base.Stop();
             base.Start();
-
-            this.RequestHandler = new ModbusRtuRequestHandler(serialPort, this);
         }
 
         ///<inheritdoc/>
@@ -164,6 +174,6 @@ namespace FluentModbus
             }
         }
 
-        #endregion
+        #endregion Methods
     }
 }

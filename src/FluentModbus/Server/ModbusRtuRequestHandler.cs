@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 
@@ -10,31 +11,35 @@ namespace FluentModbus
 
         private IModbusRtuSerialPort _serialPort;
 
-        #endregion
+        #endregion Fields
 
         #region Constructors
 
         public ModbusRtuRequestHandler(IModbusRtuSerialPort serialPort, ModbusRtuServer rtuServer) : base(rtuServer, 256)
         {
             _serialPort = serialPort;
-            _serialPort.Open();
+
+            if (!serialPort.IsOpen)
+            {
+                _serialPort.Open();
+            }
 
             this.ModbusRtuServer = rtuServer;
 
             base.Start();
         }
 
-        #endregion
+        #endregion Constructors
 
         #region Properties
 
         public ModbusRtuServer ModbusRtuServer { get; }
 
-        public override string DisplayName => _serialPort.PortName;
+        public override string DisplayName => _serialPort.PortName + UnitIdentifier;
 
-        protected override bool IsResponseRequired => this.UnitIdentifier == this.ModbusRtuServer.UnitIdentifier;
+        protected override bool IsResponseRequired => UnitIdentifier == this.ModbusRtuServer.UnitIdentifier;
 
-        #endregion
+        #endregion Properties
 
         #region Methods
 
@@ -121,7 +126,7 @@ namespace FluentModbus
             }
 
             // make sure that the incoming frame is actually adressed to this server
-            if (this.UnitIdentifier == this.ModbusRtuServer.UnitIdentifier)
+            if (this.ModbusRtuServer.UnitIdentifier == this.UnitIdentifier)
             {
                 this.LastRequest.Restart();
                 return true;
@@ -132,7 +137,7 @@ namespace FluentModbus
             }
         }
 
-        #endregion
+        #endregion Methods
 
         #region IDisposable Support
 
@@ -151,6 +156,6 @@ namespace FluentModbus
             base.Dispose(disposing);
         }
 
-        #endregion
+        #endregion IDisposable Support
     }
 }

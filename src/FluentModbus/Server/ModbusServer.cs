@@ -26,7 +26,7 @@ namespace FluentModbus
         /// </summary>
         public event EventHandler<List<int>> CoilsChanged;
 
-        #endregion
+        #endregion Events
 
         #region Fields
 
@@ -43,7 +43,7 @@ namespace FluentModbus
         private int _coilSize;
         private int _discreteInputSize;
 
-        #endregion
+        #endregion Fields
 
         #region Constructors
 
@@ -76,7 +76,7 @@ namespace FluentModbus
             _manualResetEvent = new ManualResetEventSlim(false);
         }
 
-        #endregion
+        #endregion Constructors
 
         #region Properties
 
@@ -130,7 +130,7 @@ namespace FluentModbus
             }
         }
 
-        #endregion
+        #endregion Properties
 
         #region Methods
 
@@ -314,7 +314,7 @@ namespace FluentModbus
             this.CoilsChanged?.Invoke(this, coils);
         }
 
-        #endregion
+        #endregion Methods
 
         #region IDisposable Support
 
@@ -352,6 +352,6 @@ namespace FluentModbus
             GC.SuppressFinalize(this);
         }
 
-        #endregion
+        #endregion IDisposable Support
     }
 }

@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO.Ports;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace FluentModbus
 {
@@ -38,7 +41,11 @@ namespace FluentModbus
             StopBits = stopBits;
             ReadTimeout = readTimeout;
             WriteTimeout = writeTimeout;
+
+            _manualResetEvent = new ManualResetEventSlim(false);
         }
+
+        #region Properties
 
         /// <summary>
         /// Gets the connection status of the underlying serial port.
@@ -75,12 +82,22 @@ namespace FluentModbus
         /// </summary>
         public int WriteTimeout { get; }
 
+        private ModbusMultiUnitRtuRequestHandler RequestHandler { get; set; }
+        public CancellationTokenSource CTS { get; private set; } = new CancellationTokenSource();
+
+        public object Lock = new object();
+        private Task _task_process_requests;
+        private ManualResetEventSlim _manualResetEvent;
+
+        #endregion Properties
+
         /// <summary>
         /// Starts the server. It will listen on the provided <paramref name="port"/>.
         /// </summary>
         /// <param name="port">The COM port to be used, e.g. COM1.</param>
-        public void Start(string port)
+        public void Start(string port, bool async)
         {
+            Console.WriteLine("public void Start");
             IModbusRtuSerialPort serialPort = new ModbusRtuSerialPort(new SerialPort(port)
             {
                 BaudRate = this.BaudRate,
@@ -91,11 +108,24 @@ namespace FluentModbus
                 WriteTimeout = this.WriteTimeout
             });
 
+            Lock = this;
+
+            Start(serialPort, async);
+        }
+
+        /// <summary>
+        /// Starts the server. It will listen on the provided <paramref name="port"/>.
+        /// </summary>
+        /// <param name="serialPort">The COM port to be used, e.g. COM1.</param>
+        /// <param name="async"></param>
+        internal void Start(IModbusRtuSerialPort serialPort, bool async)
+        {
             _serialPort = serialPort;
+            RequestHandler = new ModbusMultiUnitRtuRequestHandler(serialPort, serversDict, async);
 
             foreach (var unit in units)
             {
-                var server = new ModbusRtuServer(unit, false)
+                var server = new ModbusRtuServer(unit, async)
                 {
                     // those should be removed or something, they are not used in the internal start
                     BaudRate = this.BaudRate,
@@ -103,7 +133,7 @@ namespace FluentModbus
                     Parity = this.Parity,
                     StopBits = this.StopBits,
                     ReadTimeout = this.ReadTimeout,
-                    WriteTimeout = this.WriteTimeout
+                    WriteTimeout = this.WriteTimeout,
                 };
 
                 //this calls the internal start
@@ -111,33 +141,54 @@ namespace FluentModbus
                 server.Start(serialPort);
                 serversDict.Add(unit, server);
             }
+
+            StartProcessing(async);
         }
 
         /// <summary>
-        /// Starts the server. It will listen on the provided <paramref name="port"/>.
+        /// Starts the server operation.
         /// </summary>
-        /// <param name="port">The COM port to be used, e.g. COM1.</param>
-        internal void Start(IModbusRtuSerialPort serialPort)
+
+        public void StartProcessing(bool isAsync)
         {
-            _serialPort = serialPort;
+            Console.WriteLine("public void StartProcessing(bool isAsync)");
+            this.CTS = new CancellationTokenSource();
 
-            foreach (var unit in units)
+            if (!isAsync)
             {
-                var server = new ModbusRtuServer(unit)
+                // only process requests when it is explicitly triggered
+                _task_process_requests = Task.Run(() =>
                 {
-                    // those should be removed or something, they are not used in the internal start
-                    BaudRate = this.BaudRate,
-                    Handshake = this.Handshake,
-                    Parity = this.Parity,
-                    StopBits = this.StopBits,
-                    ReadTimeout = this.ReadTimeout,
-                    WriteTimeout = this.WriteTimeout
-                };
+                    Console.WriteLine("_task_process_requests = Task.Run(()");
 
-                //this calls the internal start
+                    Console.WriteLine("_manualResetEvent.Wait(this.CTS.Token);");
+                    _manualResetEvent.Wait(this.CTS.Token);
 
-                server.Start(serialPort);
-                serversDict.Add(unit, server);
+                    while (!this.CTS.IsCancellationRequested)
+                    {
+                        Console.WriteLine("Processing Request");
+                        this.ProcessRequests();
+                        Console.WriteLine("Done Processing Request");
+
+                        _manualResetEvent.Reset();
+                        _manualResetEvent.Wait(this.CTS.Token);
+                    }
+                }, this.CTS.Token);
+            }
+        }
+
+        ///<inheritdoc/>
+        private void ProcessRequests()
+        {
+            lock (this.Lock)
+            {
+                if (this.RequestHandler.IsReady)
+                {
+                    var unitId = this.RequestHandler.ReceiveRequestAsync().Result;
+
+                    if (this.RequestHandler.Length > 0)
+                        this.RequestHandler.WriteResponse(unitId);
+                }
             }
         }
 
@@ -158,11 +209,14 @@ namespace FluentModbus
         }
 
         /// <summary>
-        /// Stops the server and closes the underlying serial port.
+        /// Stops the server and removes unit from dict.
         /// </summary>
         public void Stop(byte unit)
         {
+            // TODO: should we even have single unit stop?
+            // what are the edge cases?
             serversDict[unit].Stop();
+            serversDict.Remove(unit);
         }
     }
 }

@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace MultiTester
 {
@@ -12,10 +13,11 @@ namespace MultiTester
             ;
             var units = new byte[] { 1, 2, 3 };
             var server = new ModbusMultiUnitRtuServer(units, readTimeout: 5000, writeTimeout: 5000);
-            server.Start("COM5");
+
+            server.Start("COM5", false);
 
             //var client = new ModbusRtuClient();
-            //client.Connect("COM9");
+            //client.Connect("COM5");
 
             //var data = Enumerable.Range(0, 20).Select(i => (float)i).ToArray();
             //var sw = Stopwatch.StartNew();

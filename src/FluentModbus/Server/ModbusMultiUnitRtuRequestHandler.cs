@@ -1,3 +1,4 @@
+using FluentModbus;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -6,9 +7,9 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace FluentModbus
+namespace Modbus
 {
-    internal class ModbusMultiUnitRtuRequestHandler : IDisposable
+    public class ModbusMultiUnitRtuRequestHandler : IDisposable
 
     {
         #region Fields
@@ -140,15 +141,15 @@ namespace FluentModbus
             this.OnResponseReady(frameLength);
         }
 
-        internal async Task ReceiveRequestAsync()
+        internal async Task<byte> ReceiveRequestAsync()
         {
-            if (this.CTS.IsCancellationRequested) return;
+            if (this.CTS.IsCancellationRequested) return 0;
 
             this.IsReady = false;
-
+            byte unitId = 0;
             try
             {
-                var unitId = await this.InternalReceiveRequestAsync();
+                unitId = await this.InternalReceiveRequestAsync();
 
                 this.IsReady = true; // only when IsReady = true, this.WriteResponse() can be called
 
@@ -158,6 +159,7 @@ namespace FluentModbus
             {
                 this.CTS.Cancel();
             }
+            return unitId;
         }
 
         protected int WriteFrame(byte unitId, Action<byte> extendFrame)

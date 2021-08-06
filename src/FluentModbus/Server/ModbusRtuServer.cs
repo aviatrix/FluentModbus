@@ -20,19 +20,11 @@ namespace FluentModbus
 
         /// <summary>
         /// Creates a Modbus RTU server with support for holding registers (read and write, 16 bit), input registers (read-only, 16 bit), coils (read and write, 1 bit) and discete inputs (read-only, 1 bit).
-        /// </summary>
-        /// <param name="unitIdentifier">The unique Modbus RTU unit identifier.</param>
-        public ModbusRtuServer(byte unitIdentifier) : this(unitIdentifier, true)
-        {
-            //
-        }
-
-        /// <summary>
-        /// Creates a Modbus RTU server with support for holding registers (read and write, 16 bit), input registers (read-only, 16 bit), coils (read and write, 1 bit) and discete inputs (read-only, 1 bit).
-        /// </summary>
+        /// </summary>ok
         /// <param name="isAsynchronous">Enables or disables the asynchronous operation, where each client request is processed immediately using a locking mechanism. Use synchronuous operation to avoid locks in the hosting application. See the <see href="https://github.com/Apollo3zehn/FluentModbus">documentation</see> for more details.</param>
         /// <param name="unitIdentifier">The unique Modbus RTU unit identifier.</param>
-        public ModbusRtuServer(byte unitIdentifier, bool isAsynchronous) : base(isAsynchronous)
+        /// <param name="requestHandler"></param>
+        public ModbusRtuServer(byte unitIdentifier, bool isAsynchronous = true) : base(isAsynchronous)
         {
             this.UnitIdentifier = unitIdentifier;
         }
@@ -102,8 +94,6 @@ namespace FluentModbus
         /// </summary>
         public int WriteTimeout { get; set; }
 
-        internal ModbusRtuRequestHandler RequestHandler { get; private set; }
-
         #endregion Properties
 
         #region Methods
@@ -126,8 +116,6 @@ namespace FluentModbus
 
             _serialPort = serialPort;
 
-            this.RequestHandler = new ModbusRtuRequestHandler(serialPort, this);
-
             this.Start(serialPort);
         }
 
@@ -137,8 +125,11 @@ namespace FluentModbus
         public override void Stop()
         {
             base.Stop();
+        }
 
-            this.RequestHandler?.Dispose();
+        protected override void ProcessRequests()
+        {
+            throw new NotImplementedException();
         }
 
         internal void Start(IModbusRtuSerialPort serialPort)
@@ -152,26 +143,8 @@ namespace FluentModbus
             if (this.Parity == Parity.None && this.StopBits != StopBits.Two)
                 throw new InvalidOperationException(ErrorMessage.Modbus_NoParityRequiresTwoStopBits);
 
-            this.RequestHandler = new ModbusRtuRequestHandler(serialPort, this);
-
             // "base..." is important!
-            base.Stop();
-            base.Start();
-        }
-
-        ///<inheritdoc/>
-        protected override void ProcessRequests()
-        {
-            lock (this.Lock)
-            {
-                if (this.RequestHandler.IsReady)
-                {
-                    if (this.RequestHandler.Length > 0)
-                        this.RequestHandler.WriteResponse();
-
-                    _ = this.RequestHandler.ReceiveRequestAsync();
-                }
-            }
+            //base.Stop();
         }
 
         #endregion Methods

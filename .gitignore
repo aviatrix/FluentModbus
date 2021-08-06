@@ -9,3 +9,4 @@ doc/api/*
 
 *.suo
 *.user
+CodeGraphData/

@@ -33,7 +33,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FluentModbus", "src\FluentM
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FluentModbus.Tests", "tests\FluentModbus.Tests\FluentModbus.Tests.csproj", "{EDA7B16D-17C0-4E4F-8315-A639BE519B26}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MultiTester", "MultiTester\MultiTester.csproj", "{C49EACD9-34F0-428F-9471-22E48E9E18EA}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MultiTester", "MultiTester\MultiTester.csproj", "{C49EACD9-34F0-428F-9471-22E48E9E18EA}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

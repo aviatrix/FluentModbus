@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Modbus
+namespace FluentModbus
 {
     public class ModbusMultiUnitRtuRequestHandler : IDisposable
 

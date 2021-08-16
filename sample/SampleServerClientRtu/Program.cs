@@ -23,8 +23,8 @@ namespace FluentModbus.SampleMaster
              */
 
             /* define COM ports */
-            var serverPort = "COM1";
-            var clientPort = "COM2";
+            var serverPort = "COM5";
+            var clientPort = "COM6";
 
             /* create logger */
             var loggerFactory = LoggerFactory.Create(loggingBuilder =>
@@ -37,7 +37,7 @@ namespace FluentModbus.SampleMaster
             var clientLogger = loggerFactory.CreateLogger("Client");
 
             /* create Modbus RTU server */
-            var server = new MultiUnitRtuServer(new byte[] { 1, 2, 3 }, true)
+            var server = new MultiUnitRtuServer(new byte[] { 1, 2, 3 }, false)
             {
                 // see 'RegistersChanged' event below
                 EnableRaisingEvents = true
@@ -58,28 +58,26 @@ namespace FluentModbus.SampleMaster
             /* run Modbus RTU server */
             var cts = new CancellationTokenSource();
 
-            var task_server = Task.Run(async () =>
+            await Task.Run(async () =>
             {
-                server.Start(serverPort);
+                await server.Start(serverPort);
                 serverLogger.LogInformation("Server started.");
 
-                while (!cts.IsCancellationRequested)
-                {
-                    // lock is required to synchronize buffer access between this application and the Modbus client
-                    lock (server.Lock)
-                    {
-                        DoServerWork(server);
-                    }
+                // lock is required to synchronize buffer access between this application and the Modbus client
 
-                    // update server register content once per second
-                    await Task.Delay(TimeSpan.FromSeconds(1));
-                }
-            }, cts.Token);
+                DoServerWork(server);
+                serverLogger.LogInformation("Server updated.");
+
+                // update server register content once per second
+            });
 
             /* run Modbus RTU client */
             var task_client = Task.Run(() =>
             {
+                serverLogger.LogInformation("connect client.");
+
                 client.Connect(clientPort);
+                serverLogger.LogInformation("connected.");
 
                 try
                 {
@@ -99,84 +97,33 @@ namespace FluentModbus.SampleMaster
             // wait for client task to finish
             await task_client;
 
-            // stop server
-            cts.Cancel();
-            await task_server;
-
-            server.Stop();
             serverLogger.LogInformation("Server stopped.");
+            Console.ReadKey();
         }
 
         private static void DoServerWork(MultiUnitRtuServer server)
         {
-            var random = new Random();
-
             // Option A: normal performance version, more flexibility
 
             /* get buffer in standard form (Span<short>) */
-            var registers = server.GetHoldingRegisters(1);
-            registers.SetLittleEndian<int>(address: 5, random.Next());
-
-            // Option B: high performance version, less flexibility
-
-            /* interpret buffer as array of bytes (8 bit) */
-            var byte_buffer = server.GetHoldingRegisterBuffer<byte>(1);
-            byte_buffer[20] = (byte)(random.Next() >> 24);
-
-            /* interpret buffer as array of shorts (16 bit) */
-            var short_buffer = server.GetHoldingRegisterBuffer<short>(1);
-            short_buffer[30] = (short)(random.Next(0, 100) >> 16);
-
-            /* interpret buffer as array of ints (32 bit) */
-            var int_buffer = server.GetHoldingRegisterBuffer<int>(1);
-            int_buffer[40] = random.Next(0, 100);
+            foreach (var item in new byte[] { 1, 2, 3 })
+            {
+                var registers = server.GetHoldingRegisters(item);
+                registers.SetLittleEndian<short>(address: 5, 77);
+            }
         }
 
         private static void DoClientWork(ModbusRtuClient client, ILogger logger)
         {
-            Span<byte> data;
-
             var sleepTime = TimeSpan.FromMilliseconds(100);
-            var unitIdentifier = 0x01;
-            var startingAddress = 0;
-            var registerAddress = 0;
+
             foreach (var item in new byte[] { 1, 2, 3 })
             {
-                Console.WriteLine($"unit client:{item}");
+                logger.LogInformation($"unit client:{item}");
 
                 // ReadHoldingRegisters = 0x03,        // FC03
-                data = client.ReadHoldingRegisters<byte>(item, startingAddress, 10);
-                logger.LogInformation("FC03 - ReadHoldingRegisters: Done");
-                Thread.Sleep(sleepTime);
-
-                // WriteMultipleRegisters = 0x10,      // FC16
-                client.WriteMultipleRegisters(item, startingAddress, new byte[] { 10, 00, 20, 00, 30, 00, 255, 00, 255, 01 });
-                logger.LogInformation("FC16 - WriteMultipleRegisters: Done");
-                Thread.Sleep(sleepTime);
-
-                // ReadCoils = 0x01,                   // FC01
-                data = client.ReadCoils(item, startingAddress, 10);
-                logger.LogInformation("FC01 - ReadCoils: Done");
-                Thread.Sleep(sleepTime);
-
-                // ReadDiscreteInputs = 0x02,          // FC02
-                data = client.ReadDiscreteInputs(item, startingAddress, 10);
-                logger.LogInformation("FC02 - ReadDiscreteInputs: Done");
-                Thread.Sleep(sleepTime);
-
-                // ReadInputRegisters = 0x04,          // FC04
-                data = client.ReadInputRegisters<byte>(item, startingAddress, 10);
-                logger.LogInformation("FC04 - ReadInputRegisters: Done");
-                Thread.Sleep(sleepTime);
-
-                // WriteSingleCoil = 0x05,             // FC05
-                client.WriteSingleCoil(item, registerAddress, true);
-                logger.LogInformation("FC05 - WriteSingleCoil: Done");
-                Thread.Sleep(sleepTime);
-
-                // WriteSingleRegister = 0x06,         // FC06
-                client.WriteSingleRegister(item, registerAddress, 127);
-                logger.LogInformation("FC06 - WriteSingleRegister: Done");
+                var data = client.ReadHoldingRegisters<short>(item, 5, 1);
+                logger.LogInformation("FC03 - ReadHoldingRegisters:" + item + " Done:" + data[0]);
             }
         }
     }

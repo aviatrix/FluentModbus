@@ -162,7 +162,7 @@ namespace FluentModbus.ServerMultiUnit
         /// </summary>
         public int WriteTimeout { get; }
 
-        internal MultiModbusRtuRequestHandler RequestHandler { get; private set; }
+        public MultiModbusRtuRequestHandler RequestHandler { get; private set; }
 
         #endregion Properties
 
@@ -172,7 +172,7 @@ namespace FluentModbus.ServerMultiUnit
         /// Starts the server. It will listen on the provided <paramref name="port"/>.
         /// </summary>
         /// <param name="port">The COM port to be used, e.g. COM1.</param>
-        public void Start(string port)
+        public async Task Start(string port)
         {
             IModbusRtuSerialPort serialPort = new ModbusRtuSerialPort(new SerialPort(port)
             {
@@ -184,14 +184,14 @@ namespace FluentModbus.ServerMultiUnit
                 WriteTimeout = this.WriteTimeout
             });
 
-            Start(serialPort);
+            await Start(serialPort);
         }
 
         /// <summary>
         ///
         /// </summary>
         /// <param name="serialPort"></param>
-        public void Start(IModbusRtuSerialPort serialPort)
+        public async Task Start(IModbusRtuSerialPort serialPort)
         {
             if (this.Parity == Parity.None && this.StopBits != StopBits.Two)
                 throw new InvalidOperationException(ErrorMessage.Modbus_NoParityRequiresTwoStopBits);
@@ -199,9 +199,9 @@ namespace FluentModbus.ServerMultiUnit
             // "base..." is important!
             this.RequestHandler = new MultiModbusRtuRequestHandler(serialPort, this);
 
-            this.RequestHandler.Stop();
+            //this.RequestHandler.Stop();
 
-            this.RequestHandler.BaseStart();
+            await this.RequestHandler.BaseStart();
         }
 
         /// <summary>

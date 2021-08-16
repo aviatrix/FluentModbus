@@ -50,33 +50,35 @@ namespace FluentModbus.Tests
         }
 
         [Fact]
-        public void UpdateServerRegisters()
+        public async Task UpdateServerRegisters()
         {
             var serialPort = new FakeSerialPort();
 
             var server = new MultiUnitRtuServer(new byte[] { 1, 2, 3 }, true);
 
-            server.Start(serialPort);
+            await server.Start(serialPort);
 
-            var registersOne = server.GetHoldingRegisters(1);
-            var registersTwo = server.GetHoldingRegisters(2);
-            var registersThree = server.GetHoldingRegisters(3);
-
-            registersOne.SetLittleEndian<short>(address: 5, 1);
-            registersTwo.SetLittleEndian<short>(address: 5, 2);
-            registersThree.SetLittleEndian<short>(address: 5, 3);
+            server.GetHoldingRegisters(1).SetLittleEndian<short>(address: 5, 1);
+            server.GetHoldingRegisters(2).SetLittleEndian<short>(address: 5, 2);
+            server.GetHoldingRegisters(3).SetLittleEndian<short>(address: 5, 3);
 
             var client = new ModbusRtuClient();
             client.Connect(serialPort);
 
-            var regValueOne = client.ReadHoldingRegisters<short>(1, 5, 1);
-            Assert.Equal(1, regValueOne[0]);
+            var results = new short[4];
+            await Task.Run(() =>
+           {
+               results[1] = client.ReadHoldingRegisters<short>(1, 5, 2).ToArray()[0];
 
-            var regValueTwo = client.ReadHoldingRegisters<short>(2, 5, 1);
-            Assert.Equal(2, regValueTwo[0]);
+               results[2] = client.ReadHoldingRegisters<short>(2, 5, 2).ToArray()[0];
 
-            var regValueThree = client.ReadHoldingRegisters<short>(3, 5, 1);
-            Assert.Equal(3, regValueThree[0]);
+               results[3] = client.ReadHoldingRegisters<short>(3, 5, 2).ToArray()[0];
+               client.Close();
+           });
+
+            Assert.Equal(1, results[1]);
+            Assert.Equal(2, results[2]);
+            Assert.Equal(3, results[3]);
         }
     }
 }

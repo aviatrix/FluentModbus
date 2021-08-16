@@ -155,8 +155,8 @@ namespace FluentModbus.ServerMultiUnit
 
                 this.IsReady = true; // only when IsReady = true, this.WriteResponse() can be called
 
-                //if (this.ModbusServer.IsAsynchronous)
-                this.WriteResponse(unitId);
+                if (this.ModbusServer.IsAsynchronous)
+                    this.WriteResponse(unitId);
 
                 return unitId;
             }
@@ -210,7 +210,7 @@ namespace FluentModbus.ServerMultiUnit
             return unitId;
         }
 
-        public void BaseStart()
+        public Task BaseStart()
         {
             this.serialPort.Open();
 
@@ -239,8 +239,8 @@ namespace FluentModbus.ServerMultiUnit
                             {
                                 var unitId = this.ReceiveRequestAsync().Result;
 
-                                //if (this.Length > 0)
-                                //    this.WriteResponse(unitId);
+                                if (this.Length > 0)
+                                    this.WriteResponse(unitId);
                             }
                         }
 
@@ -249,6 +249,7 @@ namespace FluentModbus.ServerMultiUnit
                     }
                 }, this.CTS.Token);
             }
+            return Task.CompletedTask;
         }
 
         /// <summary>

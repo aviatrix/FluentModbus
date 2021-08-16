@@ -17,6 +17,7 @@ namespace FluentModbus.ServerMultiUnit
         private IModbusRtuSerialPort serialPort;
 
         private Task _task;
+        private ManualResetEventSlim _manualResetEvent;
 
         #endregion Fields
 
@@ -27,6 +28,7 @@ namespace FluentModbus.ServerMultiUnit
         /// <param name="multiUnitRtuServer"></param>
         public MultiModbusRtuRequestHandler(IModbusRtuSerialPort serialPort, MultiUnitRtuServer multiUnitRtuServer)
         {
+            this.Lock = this;
             this.serialPort = serialPort;
 
             this.ModbusServer = multiUnitRtuServer;
@@ -37,9 +39,7 @@ namespace FluentModbus.ServerMultiUnit
             this.IsReady = true;
 
             this.CTS = new CancellationTokenSource();
-
-            this.serialPort.Open();
-            BaseStart();
+            _manualResetEvent = new ManualResetEventSlim(false);
         }
 
         #region Properties
@@ -54,7 +54,12 @@ namespace FluentModbus.ServerMultiUnit
 
         protected CancellationTokenSource CTS { get; }
 
-        protected ModbusFrameBuffer FrameBuffer { get; }
+        protected ModbusFrameBuffer FrameBuffer { get; private set; }
+
+        /// <summary>
+        /// Gets the lock object. For synchronous operation only.
+        /// </summary>
+        public object Lock { get; }
 
         #endregion Properties
 
@@ -65,7 +70,7 @@ namespace FluentModbus.ServerMultiUnit
         /// </summary>
         /// <param name="unitId"></param>
         /// <returns></returns>
-        protected bool IsResponseRequired(byte unitId) => this.ModbusServer.units.Contains(unitId);
+        protected bool IsResponseRequired(byte unitId) => this.ModbusServer.Units.Contains(unitId);
 
         public void WriteResponse(byte unitId)
         {
@@ -120,7 +125,7 @@ namespace FluentModbus.ServerMultiUnit
             // if incoming frames shall be processed asynchronously, access to memory must be orchestrated
             if (this.ModbusServer.IsAsynchronous)
             {
-                lock (this.ModbusServer.Lock)
+                lock (this.Lock)
                 {
                     frameLength = this.WriteFrame(unitId, processingMethod);
                 }
@@ -133,10 +138,14 @@ namespace FluentModbus.ServerMultiUnit
             this.OnResponseReady(frameLength);
         }
 
-        public async Task ReceiveRequestAsync()
+        /// <summary>
+        ///
+        /// </summary>
+        /// <returns></returns>
+        public async Task<byte> ReceiveRequestAsync()
         {
             if (this.CTS.IsCancellationRequested)
-                return;
+                return 0;
 
             this.IsReady = false;
 
@@ -146,13 +155,16 @@ namespace FluentModbus.ServerMultiUnit
 
                 this.IsReady = true; // only when IsReady = true, this.WriteResponse() can be called
 
-                if (this.ModbusServer.IsAsynchronous)
-                    this.WriteResponse(unitId);
+                //if (this.ModbusServer.IsAsynchronous)
+                this.WriteResponse(unitId);
+
+                return unitId;
             }
             catch (Exception)
             {
                 this.CTS.Cancel();
             }
+            return 0;
         }
 
         private async Task<byte> InternalReceiveRequestAsync()
@@ -190,7 +202,7 @@ namespace FluentModbus.ServerMultiUnit
             }
 
             // make sure that the incoming frame is actually adressed to this server
-            if (this.ModbusServer.units.Contains(unitId))
+            if (this.ModbusServer.Units.Contains(unitId))
             {
                 this.LastRequest.Restart();
             }
@@ -200,6 +212,8 @@ namespace FluentModbus.ServerMultiUnit
 
         public void BaseStart()
         {
+            this.serialPort.Open();
+
             if (this.ModbusServer.IsAsynchronous)
             {
                 _task = Task.Run(async () =>
@@ -210,8 +224,68 @@ namespace FluentModbus.ServerMultiUnit
                     }
                 }, this.CTS.Token);
             }
+            else
+            {
+                // only process requests when it is explicitly triggered
+                _task = Task.Run(() =>
+                {
+                    _manualResetEvent.Wait(this.CTS.Token);
+
+                    while (!this.CTS.IsCancellationRequested)
+                    {
+                        lock (this.Lock)
+                        {
+                            if (this.IsReady)
+                            {
+                                var unitId = this.ReceiveRequestAsync().Result;
+
+                                //if (this.Length > 0)
+                                //    this.WriteResponse(unitId);
+                            }
+                        }
+
+                        _manualResetEvent.Reset();
+                        _manualResetEvent.Wait(this.CTS.Token);
+                    }
+                }, this.CTS.Token);
+            }
         }
 
+        /// <summary>
+        /// Serve all available client requests. For synchronous operation only.
+        /// </summary>
+        public void Update()
+        {
+            if (this.ModbusServer.IsAsynchronous || !this.IsReady)
+                return;
+
+            _manualResetEvent.Set();
+        }
+
+        /// <summary>
+        /// Stops the server operation.
+        /// </summary>
+        public void Stop()
+        {
+            this.CTS?.Cancel();
+            _manualResetEvent?.Set();
+
+            try
+            {
+                _task?.Wait();
+            }
+            catch (Exception ex) when (ex.InnerException.GetType() == typeof(TaskCanceledException))
+            {
+                //
+            }
+        }
+
+        /// <summary>
+        ///
+        /// </summary>
+        /// <param name="unitId"></param>
+        /// <param name="extendFrame"></param>
+        /// <returns></returns>
         protected int WriteFrame(byte unitId, Action<byte> extendFrame)
         {
             int frameLength;
@@ -290,11 +364,15 @@ namespace FluentModbus.ServerMultiUnit
             this.ModbusServer.OnRegistersChanged(unitId, changedRegisters);
         }
 
-        // class 0
         private void ProcessReadHoldingRegisters(byte unitId)
         {
+            var unitAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
+            Console.WriteLine("UnitAddress:" + unitAddress);
             var startingAddress = this.FrameBuffer.Reader.ReadUInt16Reverse();
+            Console.WriteLine("StartingAddress:" + startingAddress);
+
             var quantityOfRegisters = this.FrameBuffer.Reader.ReadUInt16Reverse();
+            Console.WriteLine("quantityOfRegisters:" + startingAddress);
 
             if (this.CheckRegisterBounds(ModbusFunctionCode.ReadHoldingRegisters, startingAddress, this.ModbusServer.MaxHoldingRegisterAddress, quantityOfRegisters, 0x7D))
             {

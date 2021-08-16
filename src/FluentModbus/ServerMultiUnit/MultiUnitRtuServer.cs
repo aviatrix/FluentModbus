@@ -25,9 +25,8 @@ namespace FluentModbus.ServerMultiUnit
         /// <param name="writeTimeout"></param>
         public MultiUnitRtuServer(byte[] units, bool isAsynchronous, int baudRate = 9600, Handshake handshake = Handshake.None, Parity parity = Parity.Even, StopBits stopBits = StopBits.One, int readTimeout = 1000, int writeTimeout = 1000)
         {
-            this.units = units;
+            this.Units = units;
 
-            this.Lock = this;
             this.IsAsynchronous = isAsynchronous;
 
             this.MaxInputRegisterAddress = ushort.MaxValue;
@@ -51,7 +50,6 @@ namespace FluentModbus.ServerMultiUnit
                 _discreteInputBuffer.Add(unit, new byte[_discreteInputSize]);
             }
 
-            _manualResetEvent = new ManualResetEventSlim(false);
             BaudRate = baudRate;
             Handshake = handshake;
             Parity = parity;
@@ -76,9 +74,6 @@ namespace FluentModbus.ServerMultiUnit
 
         #region Fields
 
-        private Task _task_process_requests;
-        private ManualResetEventSlim _manualResetEvent;
-
         private Dictionary<byte, byte[]> _inputRegisterBuffer = new();
         private Dictionary<byte, byte[]> _holdingRegisterBuffer = new();
         private Dictionary<byte, byte[]> _coilBuffer = new();
@@ -88,18 +83,11 @@ namespace FluentModbus.ServerMultiUnit
         private int _holdingRegisterSize;
         private int _coilSize;
         private int _discreteInputSize;
-        public readonly byte[] units;
-
-        private IModbusRtuSerialPort _serialPort;
+        public readonly byte[] Units;
 
         #endregion Fields
 
         #region Properties
-
-        /// <summary>
-        /// Gets the lock object. For synchronous operation only.
-        /// </summary>
-        public object Lock { get; }
 
         /// <summary>
         /// Gets the operation mode.
@@ -136,15 +124,13 @@ namespace FluentModbus.ServerMultiUnit
         /// </summary>
         public bool EnableRaisingEvents { get; set; }
 
-        private protected CancellationTokenSource CTS { get; private set; }
-
-        private protected bool IsReady
-        {
-            get
-            {
-                return !_manualResetEvent.Wait(TimeSpan.Zero);
-            }
-        }
+        //private protected bool IsReady
+        //{
+        //    get
+        //    {
+        //        return !_manualResetEvent.Wait(TimeSpan.Zero);
+        //    }
+        //}
 
         /// <summary>
         /// Gets or sets the serial baud rate. Default is 9600.
@@ -207,76 +193,15 @@ namespace FluentModbus.ServerMultiUnit
         /// <param name="serialPort"></param>
         public void Start(IModbusRtuSerialPort serialPort)
         {
-            _serialPort = serialPort;
-
             if (this.Parity == Parity.None && this.StopBits != StopBits.Two)
                 throw new InvalidOperationException(ErrorMessage.Modbus_NoParityRequiresTwoStopBits);
 
             // "base..." is important!
-            this.StopListening();
-            this.StartListening();
-
             this.RequestHandler = new MultiModbusRtuRequestHandler(serialPort, this);
-        }
 
-        /// <summary>
-        /// Starts the server operation.
-        /// </summary>
-        protected void StartListening()
-        {
-            this.CTS = new CancellationTokenSource();
+            this.RequestHandler.Stop();
 
-            if (!this.IsAsynchronous)
-            {
-                // only process requests when it is explicitly triggered
-                _task_process_requests = Task.Run(() =>
-                {
-                    _manualResetEvent.Wait(this.CTS.Token);
-
-                    while (!this.CTS.IsCancellationRequested)
-                    {
-                        this.ProcessRequests();
-
-                        _manualResetEvent.Reset();
-                        _manualResetEvent.Wait(this.CTS.Token);
-                    }
-                }, this.CTS.Token);
-            }
-        }
-
-        ///<inheritdoc/>
-        protected void ProcessRequests()
-        {
-            lock (this.Lock)
-            {
-                if (this.RequestHandler.IsReady)
-                {
-                    //if (this.RequestHandler.Length > 0)
-                    //    this.RequestHandler.WriteResponse();
-
-                    _ = this.RequestHandler.ReceiveRequestAsync();
-                }
-            }
-        }
-
-        /// <summary>
-        /// Stops the server operation.
-        /// </summary>
-        public void StopListening()
-        {
-            this.CTS?.Cancel();
-            _manualResetEvent?.Set();
-
-            try
-            {
-                _task_process_requests?.Wait();
-            }
-            catch (Exception ex) when (ex.InnerException.GetType() == typeof(TaskCanceledException))
-            {
-                //
-            }
-
-            this.RequestHandler?.Dispose();
+            this.RequestHandler.BaseStart();
         }
 
         /// <summary>
@@ -390,17 +315,6 @@ namespace FluentModbus.ServerMultiUnit
             this.GetDiscreteInputBuffer(unitId).Clear();
         }
 
-        /// <summary>
-        /// Serve all available client requests. For synchronous operation only.
-        /// </summary>
-        public void Update()
-        {
-            if (this.IsAsynchronous || !this.IsReady)
-                return;
-
-            _manualResetEvent.Set();
-        }
-
         internal void OnRegistersChanged(byte unitId, List<int> registers)
         {
             this.RegistersChanged?.Invoke(this, (unitId, registers));
@@ -409,24 +323,6 @@ namespace FluentModbus.ServerMultiUnit
         internal void OnCoilsChanged(byte unitId, List<int> coils)
         {
             this.CoilsChanged?.Invoke(this, (unitId, coils));
-        }
-
-        /// <summary>
-        /// Stops the server operation.
-        /// </summary>
-        public void Stop()
-        {
-            this.CTS?.Cancel();
-            _manualResetEvent?.Set();
-
-            try
-            {
-                _task_process_requests?.Wait();
-            }
-            catch (Exception ex) when (ex.InnerException.GetType() == typeof(TaskCanceledException))
-            {
-                //
-            }
         }
 
         #endregion Methods
@@ -443,8 +339,7 @@ namespace FluentModbus.ServerMultiUnit
         {
             if (!disposedValue)
             {
-                if (disposing)
-                    this.Stop();
+                if (disposing) this.RequestHandler.Stop();
 
                 disposedValue = true;
             }
